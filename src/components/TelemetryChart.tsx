@@ -26,7 +26,8 @@ const TelemetryChart: React.FC<TelemetryChartProps> = ({ sessionKey, isLive, sel
   const [timeRange, setTimeRange] = useState<'last30' | 'last60' | 'last120'>('last30');
   const [isLoading, setIsLoading] = useState(false);
   const [loadProgress, setLoadProgress] = useState(0);
-  const CHUNK_DURATION = 30; // seconds per chunk
+  const CHUNK_SIZE = 30; // 20 seconds per chunk
+  const DELAY_BETWEEN_CHUNKS = 100; // 300ms delay between chunks
 
   useEffect(() => {
     const fetchLapData = async () => {
@@ -87,8 +88,6 @@ const TelemetryChart: React.FC<TelemetryChartProps> = ({ sessionKey, isLive, sel
             duration: lap.lap_duration
           });
 
-          const CHUNK_SIZE = 5; // 5 seconds per chunk
-          const DELAY_BETWEEN_CHUNKS = 500; // Increase delay to 500ms
           const totalDuration = (endDate.getTime() - startDate.getTime()) / 1000;
           const numberOfChunks = Math.max(1, Math.ceil(totalDuration / CHUNK_SIZE));
 
@@ -200,6 +199,18 @@ const TelemetryChart: React.FC<TelemetryChartProps> = ({ sessionKey, isLive, sel
     }
   };
 
+  const formatDrsStatus = (value: number): string => {
+    if (value === 1 || value === 10 || value === 12 || value === 14) {
+      return 'DRS on';
+    }
+    return 'DRS off';
+  };
+
+  const transformedData = telemetryData.map(d => ({
+    ...d,
+    drs_status: (d.drs === 1 || d.drs === 10 || d.drs === 12 || d.drs === 14) ? 1 : 0
+  }));
+
   return (
     <div className="telemetry-chart">
       <h2>Car Telemetry</h2>
@@ -310,13 +321,32 @@ const TelemetryChart: React.FC<TelemetryChartProps> = ({ sessionKey, isLive, sel
                 tickFormatter={(time) => new Date(time).toLocaleTimeString()}
               />
               <YAxis yAxisId="gear" domain={[0, 8]} />
-              <YAxis yAxisId="drs" orientation="right" domain={[0, 14]} />
+              <YAxis yAxisId="drs" orientation="right" domain={[0, 1]} />
               <Tooltip
                 labelFormatter={(label) => new Date(label).toLocaleTimeString()}
-                formatter={(value, name) => [value, name]}
+                formatter={(value, name) => {
+                  if (name === 'DRS') {
+                    return [formatDrsStatus(Number(value)), name];
+                  }
+                  return [value, name];
+                }}
               />
-              <Line yAxisId="gear" type="stepAfter" dataKey="n_gear" stroke="#3498db" name="Gear" dot={false} />
-              <Line yAxisId="drs" type="stepAfter" dataKey="drs" stroke="#2ecc71" name="DRS" dot={false} />
+              <Line 
+                yAxisId="gear" 
+                type="stepAfter" 
+                dataKey="n_gear" 
+                stroke="#3498db" 
+                name="Gear" 
+                dot={false} 
+              />
+              <Line 
+                yAxisId="drs" 
+                type="stepAfter" 
+                dataKey="drs_status" 
+                stroke="#2ecc71" 
+                name="DRS"
+                dot={false}
+              />
             </LineChart>
           </ResponsiveContainer>
         </div>
