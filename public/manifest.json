@@ -1,0 +1,8 @@
+{
+  "short_name": "F1 Dashboard",
+  "name": "F1 Live Dashboard",
+  "start_url": ".",
+  "display": "standalone",
+  "theme_color": "#000000",
+  "background_color": "#ffffff"
+} 
