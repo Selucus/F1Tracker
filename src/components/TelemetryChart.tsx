@@ -23,7 +23,7 @@ const TelemetryChart: React.FC<TelemetryChartProps> = ({ sessionKey, isLive, sel
   const [laps, setLaps] = useState<LapData[]>([]);
   const [selectedLap, setSelectedLap] = useState<number | null>(null);
   const [lapTelemetry, setLapTelemetry] = useState<Map<number, LapTelemetry>>(new Map());
-  const [timeRange, setTimeRange] = useState<{ start: Date | null; end: Date | null }>({ start: null, end: null });
+  const [timeRange, setTimeRange] = useState<'last30' | 'last60' | 'last120'>('last30');
   const [isLoading, setIsLoading] = useState(false);
   const [loadProgress, setLoadProgress] = useState(0);
   const CHUNK_DURATION = 30; // seconds per chunk
@@ -63,53 +63,111 @@ const TelemetryChart: React.FC<TelemetryChartProps> = ({ sessionKey, isLive, sel
         setIsLoading(true);
         setTelemetryData([]);
 
-        const startDate = new Date(lap.date_start);
-        const endDate = new Date(lap.date_end);
+        try {
+          // Parse start date from the full ISO string
+          const startDate = new Date(lap.date_start);
+          let endDate: Date;
 
-        // Set the full time range for the x-axis
-        setTimeRange({ start: startDate, end: endDate });
-
-        const CHUNK_SIZE = 5;
-        const DELAY_BETWEEN_CHUNKS = 500;
-        const totalDuration = (endDate.getTime() - startDate.getTime()) / 1000;
-        const numberOfChunks = Math.max(1, Math.ceil(totalDuration / CHUNK_SIZE));
-
-        let allData: CarTelemetry[] = [];
-
-        for (let i = 0; i < numberOfChunks; i++) {
-          try {
-            const chunkStart = new Date(startDate.getTime() + (i * CHUNK_SIZE * 1000));
-            const chunkEnd = new Date(Math.min(
-              startDate.getTime() + ((i + 1) * CHUNK_SIZE * 1000),
-              endDate.getTime()
-            ));
-
-            await new Promise(resolve => setTimeout(resolve, DELAY_BETWEEN_CHUNKS));
-            
-            const data = await F1Service.getCarTelemetry(
-              sessionKey,
-              selectedDriver,
-              chunkStart.toISOString(),
-              chunkEnd.toISOString()
-            );
-
-            if (data && data.length > 0) {
-              allData = [...allData, ...data].sort((a, b) => 
-                new Date(a.date).getTime() - new Date(b.date).getTime()
-              );
-              setTelemetryData(allData); // Update with all data so far
-            }
-          } catch (error) {
-            console.error(`Error loading chunk ${i + 1}:`, error);
+          if (lap.date_end) {
+            endDate = new Date(lap.date_end);
+          } else if (lap.date_start && lap.lap_duration) {
+            // Create end date by adding duration milliseconds to start date
+            endDate = new Date(startDate.getTime() + (lap.lap_duration * 1000));
+            // Format end date to match start date format
+            const endDateString = endDate.toISOString().replace('Z', '+00:00');
+            endDate = new Date(endDateString);
+          } else {
+            console.error('Cannot determine lap time range:', lap);
+            return;
           }
 
-          setLoadProgress(Math.round(((i + 1) / numberOfChunks) * 100));
+          console.log('Date range:', {
+            start: startDate.toISOString(),
+            end: endDate.toISOString(),
+            duration: lap.lap_duration
+          });
+
+          const CHUNK_SIZE = 5; // 5 seconds per chunk
+          const DELAY_BETWEEN_CHUNKS = 500; // Increase delay to 500ms
+          const totalDuration = (endDate.getTime() - startDate.getTime()) / 1000;
+          const numberOfChunks = Math.max(1, Math.ceil(totalDuration / CHUNK_SIZE));
+
+          console.log('Starting telemetry load:', {
+            lap: selectedLap,
+            startDate: startDate.toISOString(),
+            endDate: endDate.toISOString(),
+            totalDuration,
+            numberOfChunks
+          });
+          console.log('start', endDate) 
+
+          let allData: CarTelemetry[] = [];
+          let failedChunks = 0;
+
+          for (let i = 0; i < numberOfChunks; i++) {
+            try {
+              const chunkStart = new Date(startDate.getTime() + (i * CHUNK_SIZE * 1000));
+              const chunkEnd = new Date(Math.min(
+                startDate.getTime() + ((i + 1) * CHUNK_SIZE * 1000),
+                endDate.getTime()
+              ));
+
+              console.log(`Loading chunk ${i + 1}/${numberOfChunks}`);
+              
+              // Add delay before each request
+              await new Promise(resolve => setTimeout(resolve, DELAY_BETWEEN_CHUNKS));
+              
+              const data = await F1Service.getCarTelemetry(
+                sessionKey,
+                selectedDriver,
+                chunkStart.toISOString(),
+                chunkEnd.toISOString()
+              );
+
+              if (data && data.length > 0) {
+                allData = [...allData, ...data];
+                const sortedData = allData.sort((a, b) => 
+                  new Date(a.date).getTime() - new Date(b.date).getTime()
+                );
+                setTelemetryData(sortedData);
+                console.log(`Chunk ${i + 1} loaded: ${data.length} points`);
+              } else {
+                console.log(`No data in chunk ${i + 1}`);
+                failedChunks++;
+              }
+            } catch (error) {
+              console.error(`Error loading chunk ${i + 1}:`, error);
+              failedChunks++;
+              // Add extra delay after an error
+              await new Promise(resolve => setTimeout(resolve, DELAY_BETWEEN_CHUNKS * 2));
+            }
+
+            setLoadProgress(Math.round(((i + 1) / numberOfChunks) * 100));
+          }
+
+          console.log('Load complete:', {
+            totalPoints: allData.length,
+            failedChunks,
+            successRate: `${Math.round(((numberOfChunks - failedChunks) / numberOfChunks) * 100)}%`
+          });
+
+          if (allData.length > 0) {
+            setLapTelemetry(prev => new Map(prev).set(selectedLap, {
+              lap_number: selectedLap,
+              lap_time: formatLapTime(lap.lap_duration),
+              telemetry: allData
+            }));
+          }
+        } catch (error) {
+          console.error('Failed to fetch telemetry:', error);
+          setTelemetryData([]);
+        } finally {
+          setIsLoading(false);
+          setLoadProgress(0);
         }
       } catch (error) {
         console.error('Failed to fetch telemetry:', error);
-      } finally {
-        setIsLoading(false);
-        setLoadProgress(0);
+        setTelemetryData([]);
       }
     };
 
@@ -148,13 +206,8 @@ const TelemetryChart: React.FC<TelemetryChartProps> = ({ sessionKey, isLive, sel
       <div className="chart-controls">
         {isLive ? (
           <select
-            value={getTimeInSeconds(timeRange as any)}
-            onChange={(e) => {
-              const value = e.target.value as 'last30' | 'last60' | 'last120';
-              const now = new Date();
-              const start = new Date(now.getTime() - getTimeInSeconds(value) * 1000);
-              setTimeRange({ start, end: now });
-            }}
+            value={timeRange}
+            onChange={(e) => setTimeRange(e.target.value as 'last30' | 'last60' | 'last120')}
           >
             <option value="last30">Last 30 seconds</option>
             <option value="last60">Last 1 minute</option>
@@ -194,11 +247,6 @@ const TelemetryChart: React.FC<TelemetryChartProps> = ({ sessionKey, isLive, sel
               <XAxis 
                 dataKey="date" 
                 tickFormatter={(time) => new Date(time).toLocaleTimeString()}
-                domain={[
-                  timeRange.start?.getTime() || 'auto',
-                  timeRange.end?.getTime() || 'auto'
-                ]}
-                type="number"
               />
               <YAxis domain={[0, 'auto']} />
               <Tooltip
@@ -219,11 +267,6 @@ const TelemetryChart: React.FC<TelemetryChartProps> = ({ sessionKey, isLive, sel
               <XAxis 
                 dataKey="date" 
                 tickFormatter={(time) => new Date(time).toLocaleTimeString()}
-                domain={[
-                  timeRange.start?.getTime() || 'auto',
-                  timeRange.end?.getTime() || 'auto'
-                ]}
-                type="number"
               />
               <YAxis domain={[0, 100]} />
               <Tooltip
@@ -245,11 +288,6 @@ const TelemetryChart: React.FC<TelemetryChartProps> = ({ sessionKey, isLive, sel
               <XAxis 
                 dataKey="date" 
                 tickFormatter={(time) => new Date(time).toLocaleTimeString()}
-                domain={[
-                  timeRange.start?.getTime() || 'auto',
-                  timeRange.end?.getTime() || 'auto'
-                ]}
-                type="number"
               />
               <YAxis domain={[0, 'auto']} />
               <Tooltip
@@ -270,11 +308,6 @@ const TelemetryChart: React.FC<TelemetryChartProps> = ({ sessionKey, isLive, sel
               <XAxis 
                 dataKey="date" 
                 tickFormatter={(time) => new Date(time).toLocaleTimeString()}
-                domain={[
-                  timeRange.start?.getTime() || 'auto',
-                  timeRange.end?.getTime() || 'auto'
-                ]}
-                type="number"
               />
               <YAxis yAxisId="gear" domain={[0, 8]} />
               <YAxis yAxisId="drs" orientation="right" domain={[0, 14]} />
